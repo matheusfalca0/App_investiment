@@ -7,7 +7,6 @@ import yfinance as yf
 from scipy.optimize import minimize
 from datetime import datetime, timedelta
 
-
 # ---------------------------
 # Funções para Otimização e Fronteira
 # ---------------------------
@@ -29,7 +28,6 @@ def download_data(tickers, start, end):
     adj_close_df.dropna(inplace=True)
     return adj_close_df
 
-
 def calculate_statistics(adj_close_df):
     """Calcula retornos logarítmicos, retorno esperado anual e matriz de covariância anualizada."""
     log_returns = np.log(adj_close_df / adj_close_df.shift(1)).dropna()
@@ -37,22 +35,17 @@ def calculate_statistics(adj_close_df):
     matriz_covariancia = log_returns.cov() * 252
     return log_returns, retornos_esperados, matriz_covariancia
 
-
 def std_deviation(weights, cov_matrix):
     return np.sqrt(weights.T @ cov_matrix @ weights)
-
 
 def expected_return(weights, retornos_esperados):
     return np.sum(retornos_esperados * weights)
 
-
 def sharpe_ratio(weights, retornos_esperados, cov_matrix, risk_free_rate):
     return (expected_return(weights, retornos_esperados) - risk_free_rate) / std_deviation(weights, cov_matrix)
 
-
 def neg_sharpe_ratio(weights, retornos_esperados, cov_matrix, risk_free_rate):
     return -sharpe_ratio(weights, retornos_esperados, cov_matrix, risk_free_rate)
-
 
 # ---------------------------
 # Funções para Screening
@@ -68,7 +61,6 @@ def get_stock_info(ticker):
         st.error(f"Erro ao obter dados para {ticker}: {e}")
         return None, None
 
-
 # ---------------------------
 # Função para Backtest
 # ---------------------------
@@ -79,12 +71,10 @@ def run_backtest(tickers, start, end):
         st.error("Não foi possível baixar dados para os tickers informados.")
         return None
     daily_returns = data.pct_change().dropna()
-    # Utiliza pesos iguais
     pesos = np.array([1 / len(tickers)] * len(tickers))
     portfolio_returns = daily_returns.dot(pesos)
     portfolio_cumulative = (1 + portfolio_returns).cumprod()
     return portfolio_cumulative
-
 
 # ---------------------------
 # Interface com Streamlit: Abas
@@ -92,6 +82,10 @@ def run_backtest(tickers, start, end):
 st.title('Projeto de Investimentos')
 
 tabs = st.tabs(["Otimização de Carteira", "Screening de Ações", "Backtest"])
+
+# Função para formatar data no padrão brasileiro (DD/MM/YYYY)
+def format_date(date):
+    return date.strftime('%d/%m/%Y')
 
 # -------------
 # Aba 1: Otimização de Carteira e Fronteira Eficiente
@@ -105,9 +99,9 @@ with tabs[0]:
 
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input('Data de Início', datetime.today() - timedelta(days=5 * 365))
+        start_date = st.date_input('Data de Início', datetime.today() - timedelta(days=5 * 365), format="DD/MM/YYYY")
     with col2:
-        end_date = st.date_input('Data de Fim', datetime.today())
+        end_date = st.date_input('Data de Fim', datetime.today(), format="DD/MM/YYYY")
 
     if st.button('Calcular Otimização'):
         with st.spinner('Baixando dados e otimizando...'):
@@ -116,9 +110,8 @@ with tabs[0]:
                 st.error("Não foi possível baixar os dados para os ativos informados.")
             else:
                 log_returns, retornos_esperados, matriz_covariancia = calculate_statistics(data)
-                risk_free_rate = 0.05  # Taxa livre de risco
+                risk_free_rate = 0.05
 
-                # Otimização com restrição: cada ativo <=20%
                 constraints = {'type': 'eq', 'fun': lambda weights: np.sum(weights) - 1}
                 bounds = [(0, 0.2) for _ in range(len(tickers))]
                 initial_weights = np.array([1 / len(tickers)] * len(tickers))
@@ -134,16 +127,14 @@ with tabs[0]:
 
                 if optimized_results.success:
                     optimal_weights = optimized_results.x
-                    optimal_weights_percent = optimal_weights * 100
                     portfolio_df = pd.DataFrame({
                         'Ativo': tickers,
-                        'Peso (%)': optimal_weights_percent
+                        'Peso (%)': (optimal_weights * 100)
                     }).sort_values(by='Peso (%)', ascending=False)
 
                     st.subheader("Pesos Otimizados")
                     st.dataframe(portfolio_df)
 
-                    # Fronteira Eficiente
                     num_carteiras = 10000
                     pesos_carteiras = np.random.dirichlet(np.ones(len(tickers)), num_carteiras)
                     retornos_carteiras = np.dot(pesos_carteiras, retornos_esperados)
@@ -193,7 +184,6 @@ with tabs[1]:
             info, hist = get_stock_info(ticker_screen)
             if info is not None:
                 st.subheader("Informações Básicas")
-                # Exibe algumas informações selecionadas
                 info_to_show = {
                     'Nome': info.get('longName'),
                     'Setor': info.get('sector'),
@@ -222,10 +212,9 @@ with tabs[2]:
 
     col3, col4 = st.columns(2)
     with col3:
-        backtest_start = st.date_input('Data de Início do Backtest', datetime.today() - timedelta(days=5 * 365),
-                                       key='bt_start')
+        backtest_start = st.date_input('Data de Início do Backtest', datetime.today() - timedelta(days=5 * 365), format="DD/MM/YYYY", key='bt_start')
     with col4:
-        backtest_end = st.date_input('Data de Fim do Backtest', datetime.today(), key='bt_end')
+        backtest_end = st.date_input('Data de Fim do Backtest', datetime.today(), format="DD/MM/YYYY", key='bt_end')
 
     if st.button('Executar Backtest'):
         with st.spinner('Realizando backtest...'):
