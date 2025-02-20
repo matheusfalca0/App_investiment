@@ -1,135 +1,225 @@
 import streamlit as st
-import yfinance as yf
-import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import yfinance as yf
 from scipy.optimize import minimize
+from datetime import datetime, timedelta
 
-st.set_page_config(layout="wide")
+# ---------------------------
+# Funções para Otimização e Fronteira
+# ---------------------------
 
-st.title("MVP - Otimização e Screening de Carteiras")
+def download_data(tickers, start, end):
+    """Baixa dados para cada ticker, usando 'Adj Close' ou 'Close'."""
+    adj_close_df = pd.DataFrame()
+    for ticker in tickers:
+        try:
+            data = yf.download(ticker, start=start, end=end)
+            if 'Adj Close' in data.columns:
+                adj_close_df[ticker] = data['Adj Close']
+            elif 'Close' in data.columns:
+                adj_close_df[ticker] = data['Close']
+            else:
+                st.warning(f"Neither 'Adj Close' nor 'Close' found for {ticker}")
+        except Exception as e:
+            st.error(f"Error downloading data for {ticker}: {e}")
+    adj_close_df.dropna(inplace=True)
+    return adj_close_df
 
-# Funções auxiliares
-def get_data(tickers, period="1y"):
-    data = yf.download(tickers, period=period)["Adj Close"]
-    return data.dropna()
+def calculate_statistics(adj_close_df):
+    """Calcula retornos logarítmicos, retorno esperado anual e matriz de covariância anualizada."""
+    log_returns = np.log(adj_close_df / adj_close_df.shift(1)).dropna()
+    retornos_esperados = log_returns.mean() * 252
+    matriz_covariancia = log_returns.cov() * 252
+    return log_returns, retornos_esperados, matriz_covariancia
 
-def calculate_metrics(data):
-    returns = data.pct_change().dropna()
-    mean_returns = returns.mean() * 252
-    cov_matrix = returns.cov() * 252
-    return returns, mean_returns, cov_matrix
+def std_deviation(weights, cov_matrix):
+    return np.sqrt(weights.T @ cov_matrix @ weights)
 
-def portfolio_performance(weights, mean_returns, cov_matrix):
-    returns = np.dot(weights, mean_returns)
-    volatility = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
-    return returns, volatility
+def expected_return(weights, retornos_esperados):
+    return np.sum(retornos_esperados * weights)
 
-def negative_sharpe_ratio(weights, mean_returns, cov_matrix, risk_free_rate=0.0):
-    p_returns, p_volatility = portfolio_performance(weights, mean_returns, cov_matrix)
-    return -(p_returns - risk_free_rate) / p_volatility
+def sharpe_ratio(weights, retornos_esperados, cov_matrix, risk_free_rate):
+    return (expected_return(weights, retornos_esperados) - risk_free_rate) / std_deviation(weights, cov_matrix)
 
-def optimize_portfolio(mean_returns, cov_matrix, risk_free_rate=0.0):
-    num_assets = len(mean_returns)
-    args = (mean_returns, cov_matrix, risk_free_rate)
-    constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
-    bounds = tuple((0, 1) for _ in range(num_assets))
-    result = minimize(negative_sharpe_ratio, num_assets * [1. / num_assets], args=args, 
-                      method='SLSQP', bounds=bounds, constraints=constraints)
-    return result
+def neg_sharpe_ratio(weights, retornos_esperados, cov_matrix, risk_free_rate):
+    return -sharpe_ratio(weights, retornos_esperados, cov_matrix, risk_free_rate)
 
-def generate_portfolios(mean_returns, cov_matrix, num_portfolios=5000):
-    results = np.zeros((3, num_portfolios))
-    weights_record = []
-    for i in range(num_portfolios):
-        weights = np.random.random(len(mean_returns))
-        weights /= np.sum(weights)
-        returns, volatility = portfolio_performance(weights, mean_returns, cov_matrix)
-        sharpe_ratio = (returns) / volatility
-        results[0,i] = returns
-        results[1,i] = volatility
-        results[2,i] = sharpe_ratio
-        weights_record.append(weights)
-    return results, weights_record
+# ---------------------------
+# Funções para Screening
+# ---------------------------
+def get_stock_info(ticker):
+    """Retorna informações básicas e histórico do ticker usando yfinance."""
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        hist = stock.history(period="1y")
+        return info, hist
+    except Exception as e:
+        st.error(f"Erro ao obter dados para {ticker}: {e}")
+        return None, None
 
-# Aba: Fronteira Eficiente com Heatmap
-def efficient_frontier_tab():
-    st.header("Fronteira Eficiente e Heatmap de Covariância")
-    tickers = st.text_input("Digite os tickers separados por espaço (ex: PETR4.SA VALE3.SA AAPL):", "PETR4.SA VALE3.SA")
-    period = st.selectbox("Selecione o período:", ["1y", "2y", "5y", "10y"])
+# ---------------------------
+# Função para Backtest
+# ---------------------------
+def run_backtest(tickers, start, end):
+    """Realiza um backtest simples usando pesos iguais."""
+    data = download_data(tickers, start, end)
+    if data.empty:
+        st.error("Não foi possível baixar dados para os tickers informados.")
+        return None
+    daily_returns = data.pct_change().dropna()
+    pesos = np.array([1 / len(tickers)] * len(tickers))
+    portfolio_returns = daily_returns.dot(pesos)
+    portfolio_cumulative = (1 + portfolio_returns).cumprod()
+    return portfolio_cumulative
 
-    if tickers:
-        tickers_list = tickers.upper().split()
-        data = get_data(tickers_list, period=period)
-        returns, mean_returns, cov_matrix = calculate_metrics(data)
+# ---------------------------
+# Interface com Streamlit: Abas
+# ---------------------------
+st.title('Projeto de Investimentos')
 
-        st.subheader("Heatmap de Covariância")
-        fig, ax = plt.subplots(figsize=(10, 6))
-        sns.heatmap(cov_matrix.round(3), annot=True, cmap="coolwarm", ax=ax)
-        st.pyplot(fig)
+tabs = st.tabs(["Otimização de Carteira", "Screening de Ações", "Backtest"])
 
-        st.subheader("Fronteira Eficiente")
-        results, _ = generate_portfolios(mean_returns, cov_matrix)
-        max_sharpe_idx = np.argmax(results[2])
+# Função para formatar data no padrão brasileiro (DD/MM/YYYY)
+def format_date(date):
+    return date.strftime('%d/%m/%Y')
 
-        fig, ax = plt.subplots(figsize=(10,6))
-        scatter = ax.scatter(results[1,:], results[0,:], c=results[2,:], cmap='viridis', marker='o')
-        ax.scatter(results[1,max_sharpe_idx], results[0,max_sharpe_idx], marker='*', color='r', s=500, label='Melhor Sharpe')
-        ax.set_xlabel('Volatilidade')
-        ax.set_ylabel('Retorno Esperado')
-        ax.set_title('Fronteira Eficiente')
-        fig.colorbar(scatter, label='Índice de Sharpe')
-        ax.legend()
-        st.pyplot(fig)
-
-# Aba: Screening de Ações
-def screening_tab():
-    st.header("Screening de Ações")
-    tickers = st.text_input("Digite os tickers separados por espaço:", "PETR4.SA VALE3.SA")
-    period = st.selectbox("Período de avaliação:", ["1y", "2y", "5y"])
-
-    retorno_min = st.number_input("Retorno mínimo (%)", value=0.0)
-    volatilidade_max = st.number_input("Volatilidade máxima (%)", value=50.0)
-
-    if st.button("Executar Screening") and tickers:
-        tickers_list = tickers.upper().split()
-        data = get_data(tickers_list, period=period)
-        _, mean_returns, cov_matrix = calculate_metrics(data)
-
-        filtered = [(ticker, round(mean_returns[ticker]*100,3), round(np.sqrt(cov_matrix.loc[ticker,ticker])*100,3)) 
-                    for ticker in tickers_list 
-                    if mean_returns[ticker]*100 >= retorno_min and np.sqrt(cov_matrix.loc[ticker,ticker])*100 <= volatilidade_max]
-
-        df = pd.DataFrame(filtered, columns=["Ticker", "Retorno (%)", "Volatilidade (%)"])
-        st.dataframe(df)
-
-# Aba: Backtest
-def backtest_tab():
-    st.header("Backtest de Carteira")
-    tickers = st.text_input("Digite os tickers separados por espaço:", "PETR4.SA VALE3.SA")
-    period = st.selectbox("Selecione o período de backtest:", ["1y", "2y", "5y", "10y"])
-
-    if st.button("Executar Backtest") and tickers:
-        tickers_list = tickers.upper().split()
-        data = get_data(tickers_list, period=period)
-        normalized = data / data.iloc[0]
-
-        st.subheader("Evolução do Investimento")
-        fig, ax = plt.subplots(figsize=(10,6))
-        for ticker in tickers_list:
-            ax.plot(normalized.index, normalized[ticker], label=ticker)
-        ax.set_ylabel("Retorno Acumulado")
-        ax.set_xlabel("Data")
-        ax.legend()
-        st.pyplot(fig)
-
-# Layout com abas
-tabs = st.tabs(["Fronteira Eficiente", "Screening", "Backtest"])
-
+# -------------
+# Aba 1: Otimização de Carteira e Fronteira Eficiente
+# -------------
 with tabs[0]:
-    efficient_frontier_tab()
+    st.header("Otimização de Carteira e Fronteira Eficiente")
+
+    st.markdown("Configure os ativos e o período para análise:")
+    tickers_input = st.text_input('Ativos (separados por vírgula)', 'IVV, SPY, VGT, QQQ, VOO, OEF')
+    tickers = [t.strip().upper() for t in tickers_input.split(',')]
+
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input('Data de Início', datetime.today() - timedelta(days=5 * 365), format="DD/MM/YYYY")
+    with col2:
+        end_date = st.date_input('Data de Fim', datetime.today(), format="DD/MM/YYYY")
+
+    if st.button('Calcular Otimização'):
+        with st.spinner('Baixando dados e otimizando...'):
+            data = download_data(tickers, start_date, end_date)
+            if data.empty:
+                st.error("Não foi possível baixar os dados para os ativos informados.")
+            else:
+                log_returns, retornos_esperados, matriz_covariancia = calculate_statistics(data)
+                risk_free_rate = 0.05
+
+                constraints = {'type': 'eq', 'fun': lambda weights: np.sum(weights) - 1}
+                bounds = [(0, 0.2) for _ in range(len(tickers))]
+                initial_weights = np.array([1 / len(tickers)] * len(tickers))
+
+                optimized_results = minimize(
+                    neg_sharpe_ratio,
+                    initial_weights,
+                    args=(retornos_esperados, matriz_covariancia, risk_free_rate),
+                    method='SLSQP',
+                    constraints=constraints,
+                    bounds=bounds
+                )
+
+                if optimized_results.success:
+                    optimal_weights = optimized_results.x
+                    portfolio_df = pd.DataFrame({
+                        'Ativo': tickers,
+                        'Peso (%)': (optimal_weights * 100)
+                    }).sort_values(by='Peso (%)', ascending=False)
+
+                    st.subheader("Pesos Otimizados")
+                    st.dataframe(portfolio_df)
+
+                    num_carteiras = 10000
+                    pesos_carteiras = np.random.dirichlet(np.ones(len(tickers)), num_carteiras)
+                    retornos_carteiras = np.dot(pesos_carteiras, retornos_esperados)
+                    volatilidades_carteiras = np.sqrt(
+                        np.sum(pesos_carteiras @ matriz_covariancia * pesos_carteiras, axis=1))
+                    sharpe_ratios = (retornos_carteiras - risk_free_rate) / volatilidades_carteiras
+
+                    idx_max_sharpe = np.argmax(sharpe_ratios)
+                    sharpe_otimo = sharpe_ratio(optimal_weights, retornos_esperados, matriz_covariancia, risk_free_rate)
+
+                    st.write(f"Índice de Sharpe da Carteira Ótima: {sharpe_otimo:.4f}")
+
+                    fig = px.scatter(
+                        x=volatilidades_carteiras,
+                        y=retornos_carteiras,
+                        color=sharpe_ratios,
+                        title='Fronteira Eficiente',
+                        labels={'x': 'Volatilidade (Risco)', 'y': 'Retorno Esperado'},
+                        color_continuous_scale='viridis'
+                    )
+
+                    fig.add_trace(go.Scatter(
+                        x=[volatilidades_carteiras[idx_max_sharpe]],
+                        y=[retornos_carteiras[idx_max_sharpe]],
+                        mode='markers+text',
+                        marker=dict(color='red', size=12, symbol='star'),
+                        text=['Máximo Sharpe'],
+                        textposition='top left',
+                        name='Máximo Sharpe'
+                    ))
+
+                    st.plotly_chart(fig)
+                else:
+                    st.error("Falha na otimização. Tente ajustar os parâmetros ou os ativos.")
+
+# -------------
+# Aba 2: Screening de Ações
+# -------------
 with tabs[1]:
-    screening_tab()
+    st.header("Screening de Ações")
+    st.markdown("Pesquise um ticker para visualizar informações básicas e o histórico do ativo.")
+
+    ticker_screen = st.text_input('Ticker para Screening', 'AAPL')
+
+    if st.button('Buscar Informações'):
+        with st.spinner('Obtendo informações...'):
+            info, hist = get_stock_info(ticker_screen)
+            if info is not None:
+                st.subheader("Informações Básicas")
+                info_to_show = {
+                    'Nome': info.get('longName'),
+                    'Setor': info.get('sector'),
+                    'Indústria': info.get('industry'),
+                    'País': info.get('country'),
+                    'Valor de Mercado': info.get('marketCap'),
+                    'Preço Atual': info.get('currentPrice'),
+                    'P/L': info.get('trailingPE')
+                }
+                st.write(info_to_show)
+
+                st.subheader("Histórico do Preço (1 ano)")
+                st.line_chart(hist['Close'] if 'Close' in hist.columns else hist['Adj Close'])
+            else:
+                st.error("Não foi possível obter informações para o ticker informado.")
+
+# -------------
+# Aba 3: Backtest
+# -------------
 with tabs[2]:
-    backtest_tab()
+    st.header("Backtest da Carteira")
+    st.markdown("Selecione os ativos e o período para realizar um backtest simples da carteira (pesos iguais).")
+
+    tickers_back = st.text_input('Ativos para Backtest (separados por vírgula)', 'AAPL, MSFT, GOOGL')
+    tickers_back = [t.strip().upper() for t in tickers_back.split(',')]
+
+    col3, col4 = st.columns(2)
+    with col3:
+        backtest_start = st.date_input('Data de Início do Backtest', datetime.today() - timedelta(days=5 * 365), format="DD/MM/YYYY", key='bt_start')
+    with col4:
+        backtest_end = st.date_input('Data de Fim do Backtest', datetime.today(), format="DD/MM/YYYY", key='bt_end')
+
+    if st.button('Executar Backtest'):
+        with st.spinner('Realizando backtest...'):
+            portfolio_cumulative = run_backtest(tickers_back, backtest_start, backtest_end)
+            if portfolio_cumulative is not None:
+                st.subheader("Retorno Acumulado da Carteira")
+                st.line_chart(portfolio_cumulative)
+                st.write(f"Valor final da carteira (supondo capital inicial 1): {portfolio_cumulative.iloc[-1]:.4f}")
